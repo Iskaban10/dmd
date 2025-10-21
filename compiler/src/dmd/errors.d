@@ -171,7 +171,7 @@ static if (__VERSION__ < 2092)
     {
         va_list ap;
         va_start(ap, format);
-        vreportDiagnostic(loc, format, ap, ErrorKind.error);
+        vreportDiagnostic(loc, format, ap, ErrorKind.error, global.currentScopeName);
         va_end(ap);
     }
 else
@@ -179,9 +179,10 @@ else
     {
         va_list ap;
         va_start(ap, format);
-        vreportDiagnostic(loc, format, ap, ErrorKind.error);
+        vreportDiagnostic(loc, format, ap, ErrorKind.error, global.currentScopeName);
         va_end(ap);
     }
+    
 
 /**
  * Same as above, but takes a filename and line information arguments as separate parameters.
@@ -658,10 +659,10 @@ private void printDiagnostic(const(char)* format, va_list ap, ref DiagnosticCont
     {
         final switch (info.kind)
         {
-            case ErrorKind.error:       header = "Error: "; break;
-            case ErrorKind.deprecation: header = "Deprecation: "; break;
-            case ErrorKind.warning:     header = "Warning: "; break;
-            case ErrorKind.tip:         header = "  Tip: "; break;
+            case ErrorKind.error:       header = "Error "; break;
+            case ErrorKind.deprecation: header = "Deprecation "; break;
+            case ErrorKind.warning:     header = "Warning "; break;
+            case ErrorKind.tip:         header = "  Tip "; break;
             case ErrorKind.message:     assert(0);
         }
     }
@@ -688,15 +689,21 @@ private void printDiagnostic(const(char)* format, va_list ap, ref DiagnosticCont
     if (con)
         con.setColor(info.headerColor);
     fputs(header, stderr);
+    if(info.p1)
+    {
+        fputs("in ", stderr);
+        fputs(global.currentScopeName,stderr);
+    }
+    fputc('\n',stderr);
     if (con)
         con.resetColor();
 
     tmp.reset();
-    if (info.p1)
+    /* if (info.p1)
     {
         tmp.writestring(info.p1);
         tmp.writestring(" ");
-    }
+    }*/
     if (info.p2)
     {
         tmp.writestring(info.p2);

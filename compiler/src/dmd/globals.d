@@ -316,6 +316,8 @@ extern (C++) struct Global
     uint gaggedErrors;      /// number of errors reported while gagged
     uint gaggedDeprecations; /// number of deprecations reported while gagged
 
+    const(char)* currentScopeName;
+
     void* console;         /// opaque pointer to console for controlling text attributes
 
     Array!Identifier versionids; /// command line versions and predefined versions
@@ -395,6 +397,8 @@ extern (C++) struct Global
 
         mixin UseAnsiColors;
         params.v.color = useAnsiColors();
+
+        currentScopeName = null;
 
         compileEnv.versionNumber = parseVersionNumber(versionString());
 
