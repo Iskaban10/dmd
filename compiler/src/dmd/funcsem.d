@@ -205,8 +205,7 @@ void funcDeclarationSemantic(Scope* sc, FuncDeclaration funcdecl)
 {
     /// To store the current function name which is being handled
     const(char)* prevScopeName = global.currentScopeName;
-    if(funcdecl.ident !is null)
-        global.currentScopeName = funcdecl.toPrettyChars(true);
+    global.currentScopeName = funcdecl.toPrettyChars();
 
     version (none)
     {
