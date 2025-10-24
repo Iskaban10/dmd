@@ -1975,7 +1975,7 @@ private void checkNamedArgErrorAndReport(TemplateDeclaration td, ArgumentList ar
 {
     if (!argumentList.hasArgNames())
         return;
-
+    td.computeOneMember();
     auto tf = td.onemember ? td.onemember.isFuncDeclaration() : null;
     if (tf && tf.type && tf.type.ty == Tfunction)
     {
@@ -2005,8 +2005,11 @@ private void checkNamedArgErrorAndReportOverload(Dsymbol od, ArgumentList argume
             if (auto fd = s.isFuncDeclaration())
                 tf = fd;
             else if (auto td = s.isTemplateDeclaration())
+            {
+                td.computeOneMember();
                 if (td.onemember)
                     tf = td.onemember.isFuncDeclaration();
+            }
         }
         return 0;
     });
@@ -2086,6 +2089,7 @@ private void printCandidates(Decl)(Loc loc, Decl declaration, bool showDeprecate
             // td.onemember may not have overloads set
             // (see fail_compilation/onemember_overloads.d)
             // assume if more than one member it is overloaded internally
+            td.computeOneMember();
             bool recurse = td.onemember && (!td.onemember.isFuncDeclaration ||
                 td.members.length > 1);
             OutBuffer buf;

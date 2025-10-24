@@ -27,9 +27,11 @@ import dmd.canthrow;
 import dmd.chkformat;
 import dmd.cond;
 import dmd.ctorflow;
+import dmd.ctfeexpr : isCtfeReferenceValid;
 import dmd.dscope;
 import dmd.dsymbol;
 import dmd.dsymbolsem;
+import dmd.templatesem : computeOneMember;
 import dmd.declaration;
 import dmd.dclass;
 import dmd.dcast;
@@ -74,6 +76,7 @@ import dmd.root.array;
 import dmd.root.complex;
 import dmd.root.ctfloat;
 import dmd.root.filename;
+import dmd.root.optional;
 import dmd.common.outbuffer;
 import dmd.rootobject;
 import dmd.root.string;
@@ -95,6 +98,57 @@ import dmd.visitor;
 import dmd.visitor.postorder;
 
 enum LOGSEMANTIC = false;
+
+Optional!bool toBool(Expression _this)
+{
+    static Optional!bool integerToBool(IntegerExp _this)
+    {
+        bool r = _this.toInteger() != 0;
+        return typeof(return)(r);
+    }
+
+    static Optional!bool arrayLiteralToBool(ArrayLiteralExp _this)
+    {
+        size_t dim = _this.elements ? _this.elements.length : 0;
+        return typeof(return)(dim != 0);
+    }
+
+    static Optional!bool assocArrayLiteralToBool(AssocArrayLiteralExp _this)
+    {
+        size_t dim = _this.keys.length;
+        return typeof(return)(dim != 0);
+    }
+
+    static Optional!bool addrToBool(AddrExp _this)
+    {
+        if (isCtfeReferenceValid(_this.e1))
+            return typeof(return)(true);
+        return typeof(return)();
+    }
+
+    switch(_this.op)
+    {
+        case EXP.int64: return integerToBool(_this.isIntegerExp());
+        case EXP.float64: return typeof(return)(!!_this.isRealExp().value);
+        case EXP.complex80: return typeof(return)(!!_this.isComplexExp().value);
+        // `this` is never null (what about structs?)
+        case EXP.this_, EXP.super_: return typeof(return)(true);
+        // null in any type is false
+        case EXP.null_: return typeof(return)(false);
+        // Keep the old behaviour for this refactoring
+        // Should probably match language spec instead and check for length
+        case EXP.string_: return typeof(return)(true);
+        case EXP.arrayLiteral: return arrayLiteralToBool(_this.isArrayLiteralExp());
+        case EXP.assocArrayLiteral: return assocArrayLiteralToBool(_this.isAssocArrayLiteralExp());
+        case EXP.symbolOffset: return typeof(return)(true);
+        case EXP.address: return addrToBool(_this.isAddrExp());
+        case EXP.slice: return _this.isSliceExp().e1.toBool();
+        case EXP.comma: return _this.isCommaExp().e2.toBool();
+        // Statically evaluate this expression to a `bool` if possible
+        // Returns: an optional thath either contains the value or is empty
+        default: return typeof(return)();
+    }
+}
 
 void fillTupleExpExps(TupleExp _this, TupleDeclaration tup)
 {
@@ -606,6 +660,7 @@ bool hasRegularCtor(StructDeclaration sd, bool ignoreDisabled)
     {
         if (auto td = s.isTemplateDeclaration())
         {
+            td.computeOneMember();
             if (ignoreDisabled && td.onemember)
             {
                 if (auto ctorDecl = td.onemember.isCtorDeclaration())
@@ -623,6 +678,42 @@ bool hasRegularCtor(StructDeclaration sd, bool ignoreDisabled)
             {
                 result = true;
                 return 1;
+            }
+        }
+        return 0;
+    });
+    return result;
+}
+
+/// Returns: whether `s` is a method which can possibly be called without a struct instance.
+/// Used to check whether S() should try to call `S.opCall()` rather than construct a struct literal
+bool hasStaticOverload(Dsymbol s)
+{
+    bool result = false;
+    overloadApply(s, (Dsymbol sym) {
+        if (auto fd = sym.isFuncDeclaration())
+        {
+            if (fd.isStatic)
+            {
+                result = true;
+                return 1;
+            }
+        }
+        else if (auto td = sym.isTemplateDeclaration())
+        {
+            // Consider both `template opCall { static opCall() {} }` and `static opCall()() {}`
+            if (td._scope.stc & STC.static_)
+            {
+                result = true;
+                return 1;
+            }
+            if (auto fd = td.onemember.isFuncDeclaration())
+            {
+                if (fd.isStatic)
+                {
+                    result = true;
+                    return 1;
+                }
             }
         }
         return 0;
@@ -1909,6 +2000,7 @@ Expression resolvePropertiesOnly(Scope* sc, Expression e1)
     Expression handleTemplateDecl(TemplateDeclaration td)
     {
         assert(td);
+        td.computeOneMember();
         if (!td.onemember)
             return e1;
 
@@ -7149,8 +7241,13 @@ private extern (C++) final class ExpressionSemanticVisitor : Visitor
                     return;
                 }
                 // No constructor, look for overload of opCall
-                if (search_function(sd, Id.opCall))
-                    goto L1;
+                if (auto sym = search_function(sd, Id.opCall))
+                {
+                    // Don't consider opCall on a type with no instance
+                    // if there's no static overload for it
+                    if (!exp.e1.isTypeExp() || hasStaticOverload(sym))
+                        goto L1;
+                }
                 // overload of opCall, therefore it's a call
                 if (exp.e1.op != EXP.type)
                 {
@@ -18234,14 +18331,15 @@ private bool needsTypeInference(TemplateInstance ti, Scope* sc, int flag = 0)
             auto td = s.isTemplateDeclaration();
             if (!td)
                 return 0;
-
             /* If any of the overloaded template declarations need inference,
              * then return true
              */
+            td.computeOneMember();
             if (!td.onemember)
                 return 0;
             if (auto td2 = td.onemember.isTemplateDeclaration())
             {
+                td2.computeOneMember();
                 if (!td2.onemember || !td2.onemember.isFuncDeclaration())
                     return 0;
                 if (ti.tiargs.length >= td.parameters.length - (td.isVariadic() ? 1 : 0))
