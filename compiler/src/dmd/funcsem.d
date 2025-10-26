@@ -206,6 +206,7 @@ void funcDeclarationSemantic(Scope* sc, FuncDeclaration funcdecl)
     /// To store the current function name which is being handled
     const(char)* prevScopeName = global.currentScopeName;
     global.currentScopeName = funcdecl.toPrettyChars();
+    scope(exit) currentScopeName = prevScopeName;
 
     version (none)
     {
@@ -712,8 +713,6 @@ Ldone:
     }
 
     assert(funcdecl.type.ty != Terror || funcdecl.errors);
-
-    global.currentScopeName = prevScopeName;
 }
 
 /**
