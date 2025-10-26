@@ -33,6 +33,7 @@ import dmd.dscope;
 import dmd.dstruct;
 import dmd.dsymbol;
 import dmd.dsymbolsem;
+import dmd.templatesem : computeOneMember;
 import dmd.dtemplate;
 import dmd.enumsem;
 import dmd.errors;
@@ -70,6 +71,56 @@ import dmd.semantic3;
 import dmd.sideeffect;
 import dmd.target;
 import dmd.tokens;
+
+/***************************************
+ * Returns: true if type has any invariants
+ */
+bool hasInvariant(Type _this)
+{
+    if (auto tsa = _this.isTypeSArray())
+    {
+        return tsa.next.hasInvariant();
+    }
+    else if (auto ts = _this.isTypeStruct())
+    {
+        import dmd.dsymbolsem : size;
+        ts.sym.size(Loc.initial); // give error for forward references
+        ts.sym.determineTypeProperties();
+        return ts.sym.hasInvariant() || ts.sym.hasFieldWithInvariant;
+    }
+    else if (auto te = _this.isTypeEnum())
+    {
+        return te.memType().hasInvariant();
+    }
+    return false;
+}
+
+/*************************************
+ * Detect if this is an unsafe type because of the presence of `@system` members
+ * Returns:
+ *  true if so
+ */
+bool hasUnsafeBitpatterns(Type _this)
+{
+    static bool tstructImpl(TypeStruct _this)
+    {
+        import dmd.dsymbolsem : size;
+        _this.sym.size(Loc.initial); // give error for forward references
+        _this.sym.determineTypeProperties();
+        return _this.sym.hasUnsafeBitpatterns;
+    }
+
+    if(auto tb = _this.isTypeBasic())
+        return tb.ty == Tbool;
+
+    switch(_this.ty)
+    {
+        case Tenum: return _this.isTypeEnum().memType().hasUnsafeBitpatterns();
+        case Tstruct: return tstructImpl(_this.isTypeStruct());
+        case Tsarray: return _this.isTypeSArray().next.hasUnsafeBitpatterns();
+        default: return false;
+    }
+}
 
 /*************************************
  * Resolve a tuple index, `s[oindex]`, by figuring out what `s[oindex]` represents.
@@ -3006,6 +3057,7 @@ Type typeSemantic(Type type, Loc loc, Scope* sc)
         if (s)
         {
             auto td = s.isTemplateDeclaration;
+            td.computeOneMember();
             if (td && td.onemember && td.onemember.isAggregateDeclaration)
                 .error(loc, "template %s `%s` is used as a type without instantiation"
                     ~ "; to instantiate it use `%s!(arguments)`",

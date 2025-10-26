@@ -267,8 +267,6 @@ public:
     virtual structalign_t alignment();
     virtual int hasWild() const;
     virtual bool hasVoidInitPointers();
-    virtual bool hasUnsafeBitpatterns();
-    virtual bool hasInvariant();
     virtual Type *nextOf();
     Type *baseElemOf();
     virtual bool needsDestruction();
@@ -397,9 +395,7 @@ public:
     unsigned alignsize() override;
     bool isString() override;
     structalign_t alignment() override;
-    bool hasUnsafeBitpatterns() override;
     bool hasVoidInitPointers() override;
-    bool hasInvariant() override;
     bool needsDestruction() override;
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
@@ -692,8 +688,6 @@ public:
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
     bool hasVoidInitPointers() override;
-    bool hasUnsafeBitpatterns() override;
-    bool hasInvariant() override;
     unsigned char deduceWild(Type *t, bool isRef) override;
 
     void accept(Visitor *v) override { v->visit(this); }
@@ -721,8 +715,6 @@ public:
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
     bool hasVoidInitPointers() override;
-    bool hasUnsafeBitpatterns() override;
-    bool hasInvariant() override;
     Type *nextOf() override;
 
     void accept(Visitor *v) override { v->visit(this); }
@@ -843,4 +835,6 @@ namespace dmd
     uinteger_t size(Type *type, Loc loc);
     MATCH implicitConvTo(Type* from, Type* to);
     MATCH constConv(Type* from, Type* to);
+    bool hasUnsafeBitpatterns(Type* type);
+    bool hasInvariant(Type* type);
 }

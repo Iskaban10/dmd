@@ -1349,25 +1349,6 @@ extern (C++) abstract class Type : ASTNode
     }
 
     /*************************************
-     * Detect if this is an unsafe type because of the presence of `@system` members
-     * Returns:
-     *  true if so
-     */
-    bool hasUnsafeBitpatterns()
-    {
-        return false;
-    }
-
-    /***************************************
-     * Returns: true if type has any invariants
-     */
-    bool hasInvariant()
-    {
-        //printf("Type::hasInvariant() %s, %d\n", toChars(), ty);
-        return false;
-    }
-
-    /*************************************
      * If this is a type of something, return that something.
      */
     Type nextOf()
@@ -2026,11 +2007,6 @@ extern (C++) final class TypeBasic : Type
         return (flags & TFlags.unsigned) != 0;
     }
 
-    override bool hasUnsafeBitpatterns()
-    {
-        return ty == Tbool;
-    }
-
     // For eliminating dynamic_cast
     override TypeBasic isTypeBasic()
     {
@@ -2196,19 +2172,9 @@ extern (C++) final class TypeSArray : TypeArray
         return next.alignment();
     }
 
-    override bool hasUnsafeBitpatterns()
-    {
-        return next.hasUnsafeBitpatterns();
-    }
-
     override bool hasVoidInitPointers()
     {
         return next.hasVoidInitPointers();
-    }
-
-    override bool hasInvariant()
-    {
-        return next.hasInvariant();
     }
 
     override bool needsDestruction()
@@ -3007,20 +2973,6 @@ extern (C++) final class TypeStruct : Type
         return sym.hasVoidInitPointers;
     }
 
-    override bool hasUnsafeBitpatterns()
-    {
-        sym.size(Loc.initial); // give error for forward references
-        sym.determineTypeProperties();
-        return sym.hasUnsafeBitpatterns;
-    }
-
-    override bool hasInvariant()
-    {
-        sym.size(Loc.initial); // give error for forward references
-        sym.determineTypeProperties();
-        return sym.hasInvariant() || sym.hasFieldWithInvariant;
-    }
-
     override MOD deduceWild(Type t, bool isRef)
     {
         if (ty == t.ty && sym == (cast(TypeStruct)t).sym)
@@ -3153,16 +3105,6 @@ extern (C++) final class TypeEnum : Type
     override bool hasVoidInitPointers()
     {
         return memType().hasVoidInitPointers();
-    }
-
-    override bool hasUnsafeBitpatterns()
-    {
-        return memType().hasUnsafeBitpatterns();
-    }
-
-    override bool hasInvariant()
-    {
-        return memType().hasInvariant();
     }
 
     override Type nextOf()
