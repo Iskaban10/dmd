@@ -2067,7 +2067,6 @@ public:
     size_t getUniqueID() const;
     const char* toChars() const final override;
     char* toPrettyChars(bool QualifyTypes = false);
-    static void _init();
     static void deinitialize();
     virtual uint32_t alignsize();
     void modToBuffer(OutBuffer& buf) const;
@@ -2105,9 +2104,7 @@ public:
     Type* toBasetype();
     virtual uint8_t deduceWild(Type* t, bool isRef);
     virtual ClassDeclaration* isClassHandle();
-    virtual structalign_t alignment();
     virtual int32_t hasWild() const;
-    virtual bool hasVoidInitPointers();
     virtual Type* nextOf();
     Type* baseElemOf();
     virtual bool needsDestruction();
@@ -4516,7 +4513,6 @@ public:
     bool needsDestruction() override;
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
-    bool hasVoidInitPointers() override;
     Type* nextOf() override;
     void accept(Visitor* v) override;
 };
@@ -4745,8 +4741,6 @@ public:
     bool isIncomplete();
     uint32_t alignsize() override;
     bool isString() override;
-    structalign_t alignment() override;
-    bool hasVoidInitPointers() override;
     bool needsDestruction() override;
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
@@ -4773,12 +4767,10 @@ public:
     const char* kind() const override;
     uint32_t alignsize() override;
     TypeStruct* syntaxCopy() override;
-    structalign_t alignment() override;
     bool isBoolean() override;
     bool needsDestruction() override;
     bool needsCopyOrPostblit() override;
     bool needsNested() override;
-    bool hasVoidInitPointers() override;
     uint8_t deduceWild(Type* t, bool isRef) override;
     void accept(Visitor* v) override;
 };
