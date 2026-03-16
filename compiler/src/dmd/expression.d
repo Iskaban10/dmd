@@ -3,7 +3,7 @@
  *
  * Specification: ($LINK2 https://dlang.org/spec/expression.html, Expressions)
  *
- * Copyright:   Copyright (C) 1999-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/compiler/src/dmd/expression.d, _expression.d)
@@ -17,23 +17,18 @@ import core.stdc.stdarg;
 import core.stdc.stdio;
 import core.stdc.string;
 
-import dmd.aggregate;
 import dmd.arraytypes;
 import dmd.astenums;
 import dmd.ast_node;
-import dmd.dcast : implicitConvTo;
 import dmd.dclass;
 import dmd.declaration;
-import dmd.dimport;
-import dmd.dmodule;
 import dmd.dstruct;
 import dmd.dsymbol;
 import dmd.dtemplate;
 import dmd.errors;
-import dmd.errorsink;
 import dmd.func;
 import dmd.globals;
-import dmd.hdrgen;
+import dmd.hdrgen : toChars;
 import dmd.id;
 import dmd.identifier;
 import dmd.init;
@@ -41,12 +36,10 @@ import dmd.location;
 import dmd.mtype;
 import dmd.root.complex;
 import dmd.root.ctfloat;
-import dmd.common.outbuffer;
 import dmd.root.rmem;
 import dmd.rootobject;
 import dmd.root.string;
 import dmd.root.utf;
-import dmd.target;
 import dmd.tokens;
 import dmd.visitor;
 
@@ -67,103 +60,6 @@ inout(Expression) lastComma(inout Expression e)
         ex = (cast(CommaExp)ex).e2;
     return cast(inout)ex;
 
-}
-
-/****************************************
- * Expand tuples in-place.
- *
- * Example:
- *     When there's a call `f(10, pair: AliasSeq!(20, 30), single: 40)`, the input is:
- *         `exps =  [10, (20, 30), 40]`
- *         `names = [null, "pair", "single"]`
- *     The arrays will be modified to:
- *         `exps =  [10, 20, 30, 40]`
- *         `names = [null, "pair", null, "single"]`
- *
- * Params:
- *     exps  = array of Expressions
- *     names = optional array of names corresponding to Expressions
- */
-void expandTuples(Expressions* exps, ArgumentLabels* names = null)
-{
-    //printf("expandTuples()\n");
-    if (exps is null)
-        return;
-
-    if (names)
-    {
-        if (exps.length != names.length)
-        {
-            printf("exps.length = %d, names.length = %d\n", cast(int) exps.length, cast(int) names.length);
-            printf("exps = %s, names = %s\n", exps.toChars(), names.toChars());
-            if (exps.length > 0)
-                printf("%s\n", (*exps)[0].loc.toChars());
-            assert(0);
-        }
-    }
-
-    // At `index`, a tuple of length `length` is expanded. Insert corresponding nulls in `names`.
-    void expandNames(size_t index, size_t length)
-    {
-        if (names)
-        {
-            if (length == 0)
-            {
-                names.remove(index);
-                return;
-            }
-            foreach (i; 1 .. length)
-            {
-                names.insert(index + i, ArgumentLabel(cast(Identifier) null, Loc.init));
-            }
-        }
-    }
-
-    for (size_t i = 0; i < exps.length; i++)
-    {
-        Expression arg = (*exps)[i];
-        if (!arg)
-            continue;
-
-        // Look for tuple with 0 members
-        if (auto e = arg.isTypeExp())
-        {
-            if (auto tt = e.type.toBasetype().isTypeTuple())
-            {
-                if (!tt.arguments || tt.arguments.length == 0)
-                {
-                    exps.remove(i);
-                    expandNames(i, 0);
-                    if (i == exps.length)
-                        return;
-                }
-                else // Expand a TypeTuple
-                {
-                    exps.remove(i);
-                    auto texps = new Expressions(tt.arguments.length);
-                    foreach (j, a; *tt.arguments)
-                        (*texps)[j] = new TypeExp(e.loc, a.type);
-                    exps.insert(i, texps);
-                    expandNames(i, texps.length);
-                }
-                i--;
-                continue;
-            }
-        }
-
-        // Inline expand all the tuples
-        while (arg.op == EXP.tuple)
-        {
-            TupleExp te = cast(TupleExp)arg;
-            exps.remove(i); // remove arg
-            exps.insert(i, te.exps); // replace with tuple contents
-            expandNames(i, te.exps.length);
-            if (i == exps.length)
-                return; // empty tuple, no more arguments
-            (*exps)[i] = Expression.combine(te.e0, (*exps)[i]);
-            arg = (*exps)[i];
-        }
-    }
 }
 
 /****************************************
@@ -204,76 +100,6 @@ TemplateDeclaration getFuncTemplateDecl(Dsymbol s) @safe
 DotIdExp typeDotIdExp(Loc loc, Type type, Identifier ident) @safe
 {
     return new DotIdExp(loc, new TypeExp(loc, type), ident);
-}
-
-/***************************************************
- * Given an Expression, find the variable it really is.
- *
- * For example, `a[index]` is really `a`, and `s.f` is really `s`.
- * Params:
- *      e = Expression to look at
- *      deref = number of dereferences encountered
- * Returns:
- *      variable if there is one, null if not
- */
-VarDeclaration expToVariable(Expression e, out int deref)
-{
-    deref = 0;
-    while (1)
-    {
-        switch (e.op)
-        {
-            case EXP.variable:
-                return e.isVarExp().var.isVarDeclaration();
-
-            case EXP.dotVariable:
-                e = e.isDotVarExp().e1;
-                if (e.type.toBasetype().isTypeClass())
-                    deref++;
-
-                continue;
-
-            case EXP.index:
-            {
-                e = e.isIndexExp().e1;
-                if (!e.type.toBasetype().isTypeSArray())
-                    deref++;
-
-                continue;
-            }
-
-            case EXP.slice:
-            {
-                e = e.isSliceExp().e1;
-                if (!e.type.toBasetype().isTypeSArray())
-                    deref++;
-
-                continue;
-            }
-
-            case EXP.super_:
-                return e.isSuperExp().var.isVarDeclaration();
-            case EXP.this_:
-                return e.isThisExp().var.isVarDeclaration();
-
-            // Temporaries for rvalues that need destruction
-            // are of form: (T s = rvalue, s). For these cases
-            // we can just return var declaration of `s`. However,
-            // this is intentionally not calling `Expression.extractLast`
-            // because at this point we cannot infer the var declaration
-            // of more complex generated comma expressions such as the
-            // one for the array append hook.
-            case EXP.comma:
-            {
-                if (auto ve = e.isCommaExp().e2.isVarExp())
-                    return ve.var.isVarDeclaration();
-
-                return null;
-            }
-            default:
-                return null;
-        }
-    }
 }
 
 enum OwnedBy : ubyte
@@ -465,56 +291,6 @@ extern (C++) abstract class Expression : ASTNode
             }
         }
         return a;
-    }
-
-    dinteger_t toInteger()
-    {
-        //printf("Expression %s\n", EXPtoString(op).ptr);
-        if (!type || !type.isTypeError())
-            error(loc, "integer constant expression expected instead of `%s`", toChars());
-        return 0;
-    }
-
-    uinteger_t toUInteger()
-    {
-        //printf("Expression %s\n", EXPtoString(op).ptr);
-        return cast(uinteger_t)toInteger();
-    }
-
-    real_t toReal()
-    {
-        error(loc, "floating point constant expression expected instead of `%s`", toChars());
-        return CTFloat.zero;
-    }
-
-    real_t toImaginary()
-    {
-        error(loc, "floating point constant expression expected instead of `%s`", toChars());
-        return CTFloat.zero;
-    }
-
-    complex_t toComplex()
-    {
-        error(loc, "floating point constant expression expected instead of `%s`", toChars());
-        return complex_t(CTFloat.zero);
-    }
-
-    StringExp toStringExp()
-    {
-        return null;
-    }
-
-    /****************************************
-     * Check that the expression has a valid type.
-     * If not, generates an error "... has no type".
-     * Returns:
-     *      true if the expression is not valid.
-     * Note:
-     *      When this function returns true, `checkValue()` should also return true.
-     */
-    bool checkType()
-    {
-        return false;
     }
 
     /******************************
@@ -710,6 +486,16 @@ extern (C++) abstract class Expression : ASTNode
     }
 }
 
+// Approximate Non-semantic version of the `Type.isScalar` function in `typesem`
+bool _isRoughlyScalar(Type _this)
+{
+    if (auto tb = _this.isTypeBasic())
+        return (tb.flags & TFlags.integral | TFlags.floating) != 0;
+    else if (_this.ty == Tenum || _this.ty == Tpointer) // the enum is possibly scalar
+        return true;
+    return false;
+}
+
 /***********************************************************
  * A compile-time known integer value
  */
@@ -722,15 +508,15 @@ extern (C++) final class IntegerExp : Expression
         super(loc, EXP.int64);
         //printf("IntegerExp(value = %lld, type = '%s')\n", value, type ? type.toChars() : "");
         assert(type);
-        if (!type.isScalar())
-        {
-            //printf("%s, loc = %d\n", toChars(), loc.linnum);
-            if (type.ty != Terror)
-                error(loc, "integral constant must be scalar type, not `%s`", type.toChars());
-            type = Type.terror;
-        }
+
+        /* Verify no path to the following assert failure.
+         * Weirdly, the isScalar() includes floats - see enumsem.enumMemberSemantic() for the
+         * base type. This is possibly a bug.
+         */
+        assert(_isRoughlyScalar(type) || type.ty == Terror);
+
         this.type = type;
-        this.value = normalize(type.toBasetype().ty, value);
+        this.value = normalize(type.toBaseTypeNonSemantic().ty, value);
     }
 
     extern (D) this(dinteger_t value)
@@ -745,33 +531,6 @@ extern (C++) final class IntegerExp : Expression
         return new IntegerExp(loc, value, type);
     }
 
-    override dinteger_t toInteger()
-    {
-        // normalize() is necessary until we fix all the paints of 'type'
-        return value = normalize(type.toBasetype().ty, value);
-    }
-
-    override real_t toReal()
-    {
-        // normalize() is necessary until we fix all the paints of 'type'
-        const ty = type.toBasetype().ty;
-        const val = normalize(ty, value);
-        value = val;
-        return (ty == Tuns64)
-            ? real_t(cast(ulong)val)
-            : real_t(cast(long)val);
-    }
-
-    override real_t toImaginary()
-    {
-        return CTFloat.zero;
-    }
-
-    override complex_t toComplex()
-    {
-        return complex_t(toReal());
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -784,7 +543,7 @@ extern (C++) final class IntegerExp : Expression
 
     extern (D) void setInteger(dinteger_t value)
     {
-        this.value = normalize(type.toBasetype().ty, value);
+        this.value = normalize(type.toBaseTypeNonSemantic().ty, value);
     }
 
     extern (D) static dinteger_t normalize(TY ty, dinteger_t value)
@@ -792,6 +551,8 @@ extern (C++) final class IntegerExp : Expression
         /* 'Normalize' the value of the integer to be in range of the type
          */
         dinteger_t result;
+        if (ty == Tpointer)
+            ty = Type.tsize_t.ty;
         switch (ty)
         {
         case Tbool:
@@ -832,15 +593,6 @@ extern (C++) final class IntegerExp : Expression
         case Tuns64:
             result = cast(ulong)value;
             break;
-
-        case Tpointer:
-            if (target.ptrsize == 8)
-                goto case Tuns64;
-            if (target.ptrsize == 4)
-                goto case Tuns32;
-            if (target.ptrsize == 2)
-                goto case Tuns16;
-            assert(0);
 
         default:
             break;
@@ -974,31 +726,6 @@ extern (C++) final class RealExp : Expression
         return new RealExp(loc, value, type);
     }
 
-    override dinteger_t toInteger()
-    {
-        return cast(sinteger_t)toReal();
-    }
-
-    override uinteger_t toUInteger()
-    {
-        return cast(uinteger_t)toReal();
-    }
-
-    override real_t toReal()
-    {
-        return type.isReal() ? value : CTFloat.zero;
-    }
-
-    override real_t toImaginary()
-    {
-        return type.isReal() ? CTFloat.zero : value;
-    }
-
-    override complex_t toComplex()
-    {
-        return complex_t(toReal(), toImaginary());
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -1023,31 +750,6 @@ extern (C++) final class ComplexExp : Expression
     static ComplexExp create(Loc loc, complex_t value, Type type) @safe
     {
         return new ComplexExp(loc, value, type);
-    }
-
-    override dinteger_t toInteger()
-    {
-        return cast(sinteger_t)toReal();
-    }
-
-    override uinteger_t toUInteger()
-    {
-        return cast(uinteger_t)toReal();
-    }
-
-    override real_t toReal()
-    {
-        return creall(value);
-    }
-
-    override real_t toImaginary()
-    {
-        return cimagl(value);
-    }
-
-    override complex_t toComplex()
-    {
-        return value;
     }
 
     override void accept(Visitor v)
@@ -1187,18 +889,6 @@ extern (C++) final class NullExp : Expression
         this.type = type;
     }
 
-    override StringExp toStringExp()
-    {
-        if (this.type.implicitConvTo(Type.tstring))
-        {
-            auto se = new StringExp(loc, (cast(char*)mem.xcalloc(1, 1))[0 .. 0]);
-            se.type = Type.tstring;
-            return se;
-        }
-
-        return null;
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -1272,10 +962,11 @@ extern (C++) final class StringExp : Expression
      * as tynto.
      * Params:
      *      tynto = code unit type of the target encoding
+     *      s = set to error message on invalid string
      * Returns:
      *      number of code units
      */
-    size_t numberOfCodeUnits(int tynto = 0) const
+    extern (D) size_t numberOfCodeUnits(int tynto, out .string s) const
     {
         int encSize;
         switch (tynto)
@@ -1298,11 +989,9 @@ extern (C++) final class StringExp : Expression
         case 1:
             for (size_t u = 0; u < len;)
             {
-                if (const s = utf_decodeChar(string[0 .. len], u, c))
-                {
-                    error(loc, "%.*s", cast(int)s.length, s.ptr);
+                s = utf_decodeChar(string[0 .. len], u, c);
+                if (s)
                     return 0;
-                }
                 result += utf_codeLength(encSize, c);
             }
             break;
@@ -1310,11 +999,9 @@ extern (C++) final class StringExp : Expression
         case 2:
             for (size_t u = 0; u < len;)
             {
-                if (const s = utf_decodeWchar(wstring[0 .. len], u, c))
-                {
-                    error(loc, "%.*s", cast(int)s.length, s.ptr);
+                s = utf_decodeWchar(wstring[0 .. len], u, c);
+                if (s)
                     return 0;
-                }
                 result += utf_codeLength(encSize, c);
             }
             break;
@@ -1422,12 +1109,6 @@ extern (C++) final class StringExp : Expression
             break;
         }
     }
-
-    override StringExp toStringExp()
-    {
-        return this;
-    }
-
 
     /**
      * Compare two `StringExp` by length, then value
@@ -1708,58 +1389,6 @@ extern (C++) final class ArrayLiteralExp : Expression
         return el ? el : basis;
     }
 
-    override StringExp toStringExp()
-    {
-        TY telem = type.nextOf().toBasetype().ty;
-        if (!(telem.isSomeChar || (telem == Tvoid && (!elements || elements.length == 0))))
-            return null;
-
-        ubyte sz = 1;
-        if (telem == Twchar)
-            sz = 2;
-        else if (telem == Tdchar)
-            sz = 4;
-
-        OutBuffer buf;
-        if (elements)
-        {
-            foreach (i; 0 .. elements.length)
-            {
-                auto ch = this[i];
-                if (ch.op != EXP.int64)
-                    return null;
-                if (sz == 1)
-                    buf.writeByte(cast(ubyte)ch.toInteger());
-                else if (sz == 2)
-                    buf.writeword(cast(uint)ch.toInteger());
-                else
-                    buf.write4(cast(uint)ch.toInteger());
-            }
-        }
-        char prefix;
-        if (sz == 1)
-        {
-            prefix = 'c';
-            buf.writeByte(0);
-        }
-        else if (sz == 2)
-        {
-            prefix = 'w';
-            buf.writeword(0);
-        }
-        else
-        {
-            prefix = 'd';
-            buf.write4(0);
-        }
-
-        const size_t len = buf.length / sz - 1;
-        auto se = new StringExp(loc, buf.extractSlice()[0 .. len * sz], len, sz, prefix);
-        se.sz = sz;
-        se.type = type;
-        return se;
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -1922,12 +1551,6 @@ extern (C++) final class TypeExp : Expression
         return new TypeExp(loc, type.syntaxCopy());
     }
 
-    override bool checkType()
-    {
-        error(loc, "type `%s` is not an expression", toChars());
-        return true;
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -1960,27 +1583,6 @@ extern (C++) final class ScopeExp : Expression
         return new ScopeExp(loc, sds.syntaxCopy(null));
     }
 
-    override bool checkType()
-    {
-        if (sds.isPackage())
-        {
-            error(loc, "%s `%s` has no type", sds.kind(), sds.toChars());
-            return true;
-        }
-        auto ti = sds.isTemplateInstance();
-        if (!ti)
-            return false;
-        //assert(ti.needsTypeInference(sc));
-        if (ti.tempdecl &&
-            ti.semantictiargsdone &&
-            ti.semanticRun == PASS.initial)
-        {
-            error(loc, "partial %s `%s` has no type", sds.kind(), toChars());
-            return true;
-        }
-        return false;
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -2001,12 +1603,6 @@ extern (C++) final class TemplateExp : Expression
         //printf("TemplateExp(): %s\n", td.toChars());
         this.td = td;
         this.fd = fd;
-    }
-
-    override bool checkType()
-    {
-        error(loc, "%s `%s` has no type", td.kind(), toChars());
-        return true;
     }
 
     override void accept(Visitor v)
@@ -2134,14 +1730,7 @@ extern (C++) final class SymOffExp : SymbolExp
     {
         if (auto v = var.isVarDeclaration())
         {
-            // FIXME: This error report will never be handled anyone.
-            // It should be done before the SymOffExp construction.
-            if (v.needThis())
-            {
-                auto t = v.isThis();
-                assert(t);
-                .error(loc, "taking the address of non-static variable `%s` requires an instance of `%s`", v.toChars(), t.toChars());
-            }
+            assert(!v.needThis()); // make sure the error message is no longer necessary
             hasOverloads = false;
         }
         super(loc, EXP.symbolOffset, var, hasOverloads);
@@ -2237,16 +1826,6 @@ extern (C++) final class FuncExp : Expression
         // https://issues.dlang.org/show_bug.cgi?id=13481
         // Prevent multiple semantic analysis of lambda body.
         return new FuncExp(loc, fd);
-    }
-
-    override bool checkType()
-    {
-        if (td)
-        {
-            error(loc, "template lambda has no type");
-            return true;
-        }
-        return false;
     }
 
     override void accept(Visitor v)
@@ -2558,6 +2137,7 @@ extern (C++) final class ImportExp : UnaExp
 extern (C++) final class AssertExp : UnaExp
 {
     Expression msg;
+    Expression loweredFrom;
 
     extern (D) this(Loc loc, Expression e, Expression msg = null) @safe
     {
@@ -2639,12 +2219,6 @@ extern (C++) final class DotTemplateExp : UnaExp
         this.td = td;
     }
 
-    override bool checkType()
-    {
-        error(loc, "%s `%s` has no type", td.kind(), toChars());
-        return true;
-    }
-
     override void accept(Visitor v)
     {
         v.visit(this);
@@ -2682,35 +2256,21 @@ extern (C++) final class DotTemplateInstanceExp : UnaExp
 {
     TemplateInstance ti;
 
-    extern (D) this(Loc loc, Expression e, Identifier name, Objects* tiargs)
-    {
-        super(loc, EXP.dotTemplateInstance, e);
-        //printf("DotTemplateInstanceExp()\n");
-        this.ti = new TemplateInstance(loc, name, tiargs);
-    }
-
     extern (D) this(Loc loc, Expression e, TemplateInstance ti) @safe
     {
         super(loc, EXP.dotTemplateInstance, e);
         this.ti = ti;
     }
 
+    extern (D) this(Loc loc, Expression e, Identifier name, Objects* tiargs)
+    {
+        //printf("DotTemplateInstanceExp()\n");
+        this(loc, e, new TemplateInstance(loc, name, tiargs));
+    }
+
     override DotTemplateInstanceExp syntaxCopy()
     {
         return new DotTemplateInstanceExp(loc, e1.syntaxCopy(), ti.name, TemplateInstance.arraySyntaxCopy(ti.tiargs));
-    }
-
-    override bool checkType()
-    {
-        // Same logic as ScopeExp.checkType()
-        if (ti.tempdecl &&
-            ti.semantictiargsdone &&
-            ti.semanticRun == PASS.initial)
-        {
-            error(loc, "partial %s `%s` has no type", ti.kind(), toChars());
-            return true;
-        }
-        return false;
     }
 
     override void accept(Visitor v)
@@ -2803,6 +2363,7 @@ extern (C++) final class CallExp : UnaExp
     bool inDebugStatement;  /// true if this was in a debug statement
     bool ignoreAttributes;  /// don't enforce attributes (e.g. call @gc function in @nogc code)
     bool isUfcsRewrite;     /// the first argument was pushed in here by a UFCS rewrite
+    bool fromOpAssignment;  // set when operator overload method call from assignment (2024 edition)
     VarDeclaration vthis2;  // container for multi-context
     Expression loweredFrom; // set if this is the result of a lowering
 
@@ -2888,25 +2449,6 @@ extern (C++) final class CallExp : UnaExp
     {
         v.visit(this);
     }
-}
-
-/**
- * Get the called function type from a call expression
- * Params:
- *   ce = function call expression. Must have had semantic analysis done.
- * Returns: called function type, or `null` if error / no semantic analysis done
- */
-TypeFunction calledFunctionType(CallExp ce)
-{
-    Type t = ce.e1.type;
-    if (!t)
-        return null;
-    t = t.toBasetype();
-    if (auto tf = t.isTypeFunction())
-        return tf;
-    if (auto td = t.isTypeDelegate())
-        return td.nextOf().isTypeFunction();
-    return null;
 }
 
 FuncDeclaration isFuncAddress(Expression e, bool* hasOverloads = null) @safe

@@ -3,7 +3,7 @@
  *
  * Specification: $(LINK2 https://dlang.org/spec/ddoc.html, Documentation Generator)
  *
- * Copyright:   Copyright (C) 1999-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/compiler/src/dmd/doc.d, _doc.d)
@@ -45,8 +45,6 @@ import dmd.lexer;
 import dmd.location;
 import dmd.mtype;
 import dmd.root.array;
-import dmd.root.file;
-import dmd.root.filename;
 import dmd.common.outbuffer;
 import dmd.root.port;
 import dmd.root.rmem;
@@ -54,6 +52,7 @@ import dmd.root.string;
 import dmd.root.utf;
 import dmd.tokens;
 import dmd.visitor;
+
 
 /****************************************************
  * Generate Ddoc text for Module `m` and append it to `outbuf`.
@@ -212,44 +211,6 @@ public
 void gendocfile(Module m, const char* ddoctext_ptr, size_t ddoctext_length, const char* datetime, ErrorSink eSink, ref OutBuffer outbuf)
 {
     gendocfile(m, ddoctext_ptr[0 .. ddoctext_length], datetime, eSink, outbuf);
-}
-
-public
-struct Escape
-{
-    const(char)[][char.max] strings;
-
-    /***************************************
-     * Find character string to replace c with.
-     */
-    const(char)[] escapeChar(char c) @safe
-    {
-        version (all)
-        {
-            //printf("escapeChar('%c') => %p, %p\n", c, strings, strings[c].ptr);
-            return strings[c];
-        }
-        else
-        {
-            const(char)[] s;
-            switch (c)
-            {
-            case '<':
-                s = "&lt;";
-                break;
-            case '>':
-                s = "&gt;";
-                break;
-            case '&':
-                s = "&amp;";
-                break;
-            default:
-                s = null;
-                break;
-            }
-            return s;
-        }
-    }
 }
 
 /***********************************************************
@@ -661,6 +622,53 @@ struct DocComment
 }
 
 private:
+
+/** Lazily initializes and returns the escape table.
+Turns out it eats a lot of memory.
+*/
+Escape* escapetable(Module _this) nothrow
+{
+    if (!_this._escapetable)
+        _this._escapetable = new Escape();
+    return cast(Escape*) _this._escapetable;
+}
+
+struct Escape
+{
+    const(char)[][char.max] strings;
+
+    /***************************************
+     * Find character string to replace c with.
+     */
+    const(char)[] escapeChar(char c) @safe
+    {
+        version (all)
+        {
+            //printf("escapeChar('%c') => %p, %p\n", c, strings, strings[c].ptr);
+            return strings[c];
+        }
+        else
+        {
+            const(char)[] s;
+            switch (c)
+            {
+            case '<':
+                s = "&lt;";
+                break;
+            case '>':
+                s = "&gt;";
+                break;
+            case '&':
+                s = "&amp;";
+                break;
+            default:
+                s = null;
+                break;
+            }
+            return s;
+        }
+    }
+}
 
 /***********************************************************
  */
@@ -1383,11 +1391,11 @@ void emitComment(Dsymbol s, ref OutBuffer buf, Scope* sc)
         {
             if (s && sc.lastdc && isDitto(com))
             {
-                sc.lastdc.a.push(s);
+                (cast(DocComment*) sc.lastdc).a.push(s);
                 return;
             }
             // Put previous doc comment if exists
-            if (DocComment* dc = sc.lastdc)
+            if (auto dc = cast(DocComment*) sc.lastdc)
             {
                 assert(dc.a.length > 0, "Expects at least one declaration for a" ~
                     "documentation comment");
@@ -3113,7 +3121,9 @@ struct MarkdownLink
     {
         size_t iStart = i + 1;
         size_t iEnd = iStart;
-        if (iEnd >= buf.length || buf[iEnd] != '[' || (iEnd+1 < buf.length && buf[iEnd+1] == ']'))
+        if (iEnd >= buf.length)
+            return i;
+        if (buf[iEnd] != '[' || (iEnd+1 < buf.length && buf[iEnd+1] == ']'))
         {
             // collapsed reference [foo][] or shortcut reference [foo]
             iStart = delimiter.iStart + delimiter.count - 1;

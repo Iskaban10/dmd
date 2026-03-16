@@ -3,7 +3,7 @@
  *
  * Specification: C11
  *
- * Copyright:   Copyright (C) 2021-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 2021-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/compiler/src/dmd/importc.d, _importc.d)
@@ -520,6 +520,10 @@ Dsymbol handleSymbolRedeclarations(ref Scope sc, Dsymbol s, Dsymbol s2, ScopeDsy
             sds.symtab.update(vd);      // replace vd2 with the definition
             return vd;
         }
+        else if (!i1 && !(vd2.storage_class & STC.extern_)) /* incoming has void void definition */
+        {
+            vd.storage_class |= STC.extern_;
+        }
 
         /* BUG: the types should match, which needs semantic() to be run on it
          *    extern int x;
@@ -571,7 +575,7 @@ Dsymbol handleSymbolRedeclarations(ref Scope sc, Dsymbol s, Dsymbol s2, ScopeDsy
         if (fd.fbody)                   // fd is the definition
         {
             if (log) printf(" replace existing with new\n");
-            sds.symtab.update(fd);      // replace fd2 in symbol table with fd
+            sds.symtab.update(fd);  // replace fd2 in symbol table with fd
             fd.overnext = fd2;
 
             /* If fd2 is covering a tag symbol, then fd has to cover the same one
@@ -627,7 +631,7 @@ void cEnumSemantic(Scope* sc, EnumDeclaration ed)
     // C11 6.7.2.2-2 value must be representable as an int.
     // The sizemask represents all values that int will fit into,
     // from 0..uint.max.  We want to cover int.min..uint.max.
-    IntRange ir = IntRange.fromType(commonType);
+    IntRange ir = intRangeFromType(commonType);
 
     void emSemantic(EnumMember em, ref ulong nextValue)
     {

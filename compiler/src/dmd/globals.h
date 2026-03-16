@@ -1,5 +1,5 @@
 /* Compiler implementation of the D programming language
- * Copyright (C) 1999-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright (C) 1999-2026 by The D Language Foundation, All Rights Reserved
  * written by Walter Bright
  * https://www.digitalmars.com
  * Distributed under the Boost Software License, Version 1.0.
@@ -65,6 +65,13 @@ enum JsonFieldFlags
     buildInfo    = (1 << 1),
     modules      = (1 << 2),
     semantics    = (1 << 3)
+};
+
+enum class Edition : uint16_t
+{
+    v2023 = 2023,
+    v2024,
+    v2025,
 };
 
 enum CppStdRevision
@@ -205,7 +212,7 @@ struct Param
     Help help;
     Verbose v;
 
-    unsigned short edition;      // edition year
+    Edition edition;             // edition year
     void* editionFiles;          // Edition corresponding to a filespec
 
     // Options for `-preview=/-revert=`
@@ -233,11 +240,13 @@ struct Param
     FeatureState dtorFields;     // destruct fields of partially constructed objects
                                  // https://issues.dlang.org/show_bug.cgi?id=14246
     FeatureState systemVariables; // limit access to variables marked @system from @safe code
+    d_bool useFastDFA;             // Use fast data flow analysis engine
 
     CHECKENABLE useInvariants;     // generate class invariant checks
     CHECKENABLE useIn;             // generate precondition checks
     CHECKENABLE useOut;            // generate postcondition checks
     CHECKENABLE useArrayBounds;    // when to generate code for array bounds checks
+    CHECKENABLE useNullCheck;      // when to generate code for null dereference checks
     CHECKENABLE useAssert;         // when to generate code for assert()'s
     CHECKENABLE useSwitchError;    // check for switches without a default
     CHECKENABLE boundscheck;       // state of -boundscheck switch
@@ -329,6 +338,7 @@ struct CompileEnv
     d_bool transitionIn;
     d_bool ddocOutput;
     d_bool masm;
+    DString switchPrefix;
     IdentifierCharLookup cCharLookupTable;
     IdentifierCharLookup dCharLookupTable;
 };

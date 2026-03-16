@@ -6,7 +6,7 @@
  * utilities needed for arguments parsing, path manipulation, etc...
  * This file is not shared with other compilers which use the DMD front-end.
  *
- * Copyright:   Copyright (C) 1999-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/compiler/src/dmd/main.d, _main.d)
@@ -587,7 +587,11 @@ private int tryMain(const(char)[][] argv, out Param params)
 
             buf.reset();         // reuse the buffer
             genhdrfile(m, params.dihdr.fullOutput, buf);
-            if (!writeFile(m.loc, m.hdrfile.toString(), buf[]))
+            if (params.dihdr.name == "-") {
+                size_t n = fwrite(buf[].ptr, 1, buf.length, stdout);
+                assert(n == buf.length);
+            }
+            else if (!writeFile(m.loc, m.hdrfile.toString(), buf[]))
                 fatal();
         }
     }
@@ -666,14 +670,25 @@ private int tryMain(const(char)[][] argv, out Param params)
     if (global.errors)
         removeHdrFilesAndFail(params, modules);
 
-    // Scan for functions to inline
+    // Scan for modules with always inline functions
     foreach (m; modules)
     {
-        if (params.useInline || m.hasAlwaysInlines)
+        if (m.hasAlwaysInlines)
         {
             if (params.v.verbose)
-                message("inline scan %s", m.toChars());
-            inlineScanModule(m, global.errorSink);
+                message("scan pragma(inline) in %s", m.toChars());
+            inlineScanPragmaInline(m, global.errorSink);
+        }
+    }
+
+    if (params.useInline)
+    {
+        // Scan for functions to inline
+        foreach (m; modules)
+        {
+            if (params.v.verbose)
+                message("scan all inlines in %s", m.toChars());
+            inlineScanAllFunctions(m, global.errorSink);
         }
     }
 
@@ -958,9 +973,6 @@ bool parseCommandlineAndConfig(const(char)[][] argv, out Param params, ref Strin
 
     bool isX86_64 = arch[0] == '6';
 
-    version(Windows) // delete LIB entry in [Environment] (necessary for optlink) to allow inheriting environment for MS-COFF
-        environment.update("LIB", 3).value = null;
-
     // read from DFLAGS in [Environment{arch}] section
     char[80] envsection = void;
     snprintf(envsection.ptr, envsection.length, "Environment%.*s", cast(int) arch.length, arch.ptr);
@@ -1095,6 +1107,9 @@ void reconcileCommands(ref Param params, ref Target target)
 
         if (params.useSwitchError == CHECKENABLE._default)
             params.useSwitchError = CHECKENABLE.off;
+
+        if (params.useNullCheck == CHECKENABLE._default)
+            params.useNullCheck = CHECKENABLE.off;
     }
     else
     {
@@ -1115,6 +1130,9 @@ void reconcileCommands(ref Param params, ref Target target)
 
         if (params.useSwitchError == CHECKENABLE._default)
             params.useSwitchError = CHECKENABLE.on;
+
+        if (params.useNullCheck == CHECKENABLE._default)
+            params.useNullCheck = CHECKENABLE.off;
     }
 
     if (params.betterC)

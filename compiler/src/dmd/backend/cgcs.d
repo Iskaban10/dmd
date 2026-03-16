@@ -7,7 +7,7 @@
  * Compute common subexpressions for non-optimized builds.
  *
  * Copyright:   Copyright (C) 1985-1995 by Symantec
- *              Copyright (C) 2000-2025 by The D Language Foundation, All Rights Reserved
+ *              Copyright (C) 2000-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      https://github.com/dlang/dmd/blob/master/src/dmd/backend/cgcs.d
@@ -20,6 +20,7 @@ import core.stdc.stdio;
 import core.stdc.stdlib;
 
 import dmd.backend.cc;
+import dmd.backend.blockopt : BlockOpt;
 import dmd.backend.cdef;
 import dmd.backend.code;
 import dmd.backend.el;
@@ -42,11 +43,11 @@ nothrow:
  */
 
 @trusted
-public void comsubs(ref GlobalOptimizer go)
+public void comsubs(ref GlobalOptimizer go, ref BlockOpt bo)
 {
     debug if (debugx) printf("comsubs(%p)\n",bo.startblock);
 
-    comsubs2(bo.startblock, cgcsdata, go);
+    comsubs2(bo.startblock, cgcsdata, go, bo);
 
     debug if (debugx)
         printf("done with comsubs()\n");
@@ -74,10 +75,10 @@ alias hash_t = uint;    // for hash values
  * String together as many blocks as we can.
  */
 @trusted
-void comsubs2(block* startblock, ref CGCS cgcs, ref GlobalOptimizer go)
+void comsubs2(block* startblock, ref CGCS cgcs, ref GlobalOptimizer go, ref BlockOpt bo)
 {
     // No longer just compute Bcount - eliminate unreachable blocks too
-    block_compbcount(go);                 // eliminate unreachable blocks
+    block_compbcount(go, bo);                 // eliminate unreachable blocks
 
     cgcs.start();
 
@@ -513,31 +514,40 @@ void ecom(ref CGCS cgcs, ref elem* pe)
                 printf("i: %2d Hhash: %6d Helem: %p\n",
                        cast(int) i,hcs.Hhash,hcs.Helem);
 
-            elem* ehash;
-            if (hash == hcs.Hhash && (ehash = hcs.Helem) != null)
+            if (hash == hcs.Hhash && hcs.Helem != null)
             {
-                /* if elems are the same and we still have room for more    */
-                if (el_match(e,ehash) && ehash.Ecount < 0xFF)
+                elem* ehash = hcs.Helem;
+
+                /* Make sure leaves are already merged as common subexpressions
+                 * before trying to merge the current node with a candidate.
+                 * Otherwise, hash collisions can result in invalid CSE
+                 * (i.e. if a leaf has been clobbered by assignment).
+                 */
+                if (!OTleaf(op))
                 {
-                    /* Make sure leaves are also common subexpressions
-                     * to avoid false matches.
-                     */
-                    if (!OTleaf(op))
-                    {
-                        if (!e.E1.Ecount)
-                            continue;
-                        if (OTbinary(op) && !e.E2.Ecount)
-                            continue;
-                    }
-                    ehash.Ecount++;
-                    pe = ehash;
-
-                    debug if (debugx)
-                        printf("**MATCH** %p with %p\n",e,pe);
-
-                    el_free(e);
-                    return;
+                    if (e.E1 != ehash.E1 || !e.E1.Ecount)
+                        continue;
+                    if (OTbinary(op) && (e.E2 != ehash.E2 || !e.E2.Ecount))
+                        continue;
                 }
+
+                /* Compare parents (the entire subtrees in fact) only when
+                 * the children are eligible, which significantly speeds up
+                 * common subexpression matching. Also, check for overflow.
+                 */
+                if (!el_match(e, ehash) || ehash.Ecount == 0xFF)
+                {
+                    continue;
+                }
+
+                ehash.Ecount++;
+                pe = ehash;
+
+                debug if (debugx)
+                    printf("**MATCH** %p with %p\n",e,pe);
+
+                el_free(e);
+                return;
             }
         }
     }

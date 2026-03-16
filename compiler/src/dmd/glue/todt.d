@@ -2,7 +2,7 @@
  * Put initializers and objects created from CTFE into a `dt_t` data structure
  * so the backend puts them into the data segment.
  *
- * Copyright:   Copyright (C) 1999-2025 by The D Language Foundation, All Rights Reserved
+ * Copyright:   Copyright (C) 1999-2026 by The D Language Foundation, All Rights Reserved
  * Authors:     $(LINK2 https://www.digitalmars.com, Walter Bright)
  * License:     $(LINK2 https://www.boost.org/LICENSE_1_0.txt, Boost License 1.0)
  * Source:      $(LINK2 https://github.com/dlang/dmd/blob/master/compiler/src/dmd/glue/todt.d, _todt.d)
@@ -37,7 +37,7 @@ import dmd.dsymbol;
 import dmd.dtemplate;
 import dmd.errors;
 import dmd.expression;
-import dmd.expressionsem : toBool;
+import dmd.expressionsem : toBool, toInteger;
 import dmd.func;
 import dmd.globals;
 import dmd.init;
@@ -409,7 +409,8 @@ void Expression_toDt(Expression e, ref DtBuilder dtb)
         Type t = e.type.toBasetype();
 
         // BUG: should implement some form of static string pooling
-        const n = cast(int)e.numberOfCodeUnits();
+        string s2;
+        const n = cast(int)e.numberOfCodeUnits(0, s2);
         const(char)* p;
         char* q;
         if (e.sz == 1)
@@ -582,7 +583,7 @@ void Expression_toDt(Expression e, ref DtBuilder dtb)
         }
         Symbol* s = toSymbol(e.fd);
         toObjFile(e.fd, false);
-        if (e.fd.tok == TOK.delegate_)
+        if (e.type.ty == Tdelegate)
             dtb.size(0);
         dtb.xoff(s, 0);
     }
@@ -1001,13 +1002,32 @@ private void membersToDt(AggregateDeclaration ad, ref DtBuilder dtb,
                 auto value = ie.getInteger();
                 const width = bf.fieldWidth;
                 const mask = (1L << width) - 1;
-                bitFieldValue = (bitFieldValue & ~(mask << bitOffset)) | ((value & mask) << bitOffset);
+                bitFieldValue = (bitFieldValue & ~(mask << bf.bitOffset)) | ((value & mask) << bf.bitOffset);
                 //printf("bitFieldValue x%llx\n", bitFieldValue);
             }
             else
                 Expression_toDt(e, dtbx);    // convert e to an initializer dt
         }
-        else if (!bf)
+        else if (bf)
+        {
+            if (Initializer init = vd._init)
+            {
+                if (init.isVoidInitializer())
+                    continue;
+
+                assert(vd.semanticRun >= PASS.semantic2done);
+                auto ei = init.isExpInitializer();
+                assert(ei);
+                auto ie = ei.exp.isIntegerExp();
+                assert(ie);
+
+                auto value = ie.getInteger();
+                const width = bf.fieldWidth;
+                const mask = (1L << width) - 1;
+                bitFieldValue = (bitFieldValue & ~(mask << bf.bitOffset)) | ((value & mask) << bf.bitOffset);
+            }
+        }
+        else
         {
             if (Initializer init = vd._init)
             {
@@ -1108,7 +1128,10 @@ private void toDtElem(TypeSArray tsa, ref DtBuilder dtb, Expression e, bool isCt
             // https://issues.dlang.org/show_bug.cgi?id=1914
             // https://issues.dlang.org/show_bug.cgi?id=3198
             if (auto se = e.isStringExp())
-                len /= se.numberOfCodeUnits();
+            {
+                string s;
+                len /= se.numberOfCodeUnits(0, s);
+            }
             else if (auto ae = e.isArrayLiteralExp())
                 len /= ae.elements.length;
         }
@@ -1452,31 +1475,6 @@ private extern (C++) class TypeInfoDtVisitor : Visitor
         {
             import dmd.semantic3 : semanticTypeInfoMembers;
             semanticTypeInfoMembers(sd);
-        }
-
-        if (TemplateInstance ti = sd.isInstantiated())
-        {
-            if (!ti.needsCodegen())
-            {
-                assert(ti.minst || sd.requestTypeInfo);
-
-                /* ti.toObjFile() won't get called. So, store these
-                 * member functions into object file in here.
-                 */
-
-                if (sd.xeq && sd.xeq != StructDeclaration.xerreq)
-                    toObjFile(sd.xeq, global.params.multiobj);
-                if (sd.xcmp && sd.xcmp != StructDeclaration.xerrcmp)
-                    toObjFile(sd.xcmp, global.params.multiobj);
-                if (FuncDeclaration ftostr = search_toString(sd))
-                    toObjFile(ftostr, global.params.multiobj);
-                if (sd.xhash)
-                    toObjFile(sd.xhash, global.params.multiobj);
-                if (sd.postblit)
-                    toObjFile(sd.postblit, global.params.multiobj);
-                if (sd.dtor)
-                    toObjFile(sd.dtor, global.params.multiobj);
-            }
         }
 
         /* Put out:
